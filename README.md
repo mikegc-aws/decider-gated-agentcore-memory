@@ -1,15 +1,16 @@
 # Decider-gated AgentCore Memory session manager
 
-> ### ⚠️ Experimental — proof of concept only
+> ### ⚠️ Experimental, proof of concept only
 >
 > This is a research spike, not a library. It is **not production code**, is not
 > supported, has no stability guarantees, and is not affiliated with or endorsed by
 > AWS or the Strands Agents project. Expect it to break against future versions of
 > the upstream SDK, which it subclasses and depends on internals of.
 >
-> It also **depends on a decision model that has no public deployment** (see
-> [Requirements](#7-requirements-and-running-it)). Without an endpoint of your own
-> the gating path cannot run — though it fails open, so the agent still works.
+> It needs a decision model to call. Both backends it supports are publicly
+> available. Neither is a hosted endpoint you can just point at, so see
+> [Requirements](#7-requirements-and-running-it). With nothing configured the
+> gating path fails open, so the agent still works, just ungated.
 >
 > The quantitative claims come from small, self-labelled sets (20 utterances, 4
 > queries) written by the same person who wrote the prompts being tested. The
@@ -41,7 +42,7 @@ text message it:
 - drops anything below a fixed `relevance_score` (default 0.2),
 - splices the survivors into the user's message as a `<user_context>` block.
 
-Confirmed still true in the current release — the newest SDK has been heavily
+Confirmed still true in the current release. The newest SDK has been heavily
 refactored (batching, `PersistenceMode`, metadata filters, async mode, bidi), but
 the retrieval decision itself is unchanged: `session_manager.py:848-925`.
 
@@ -70,7 +71,7 @@ Look at rank 3. For a query about **drink preference**, *"prefers four spaces, n
 tabs, for code indentation"* (0.380) outranks *"is trying to cut down on
 caffeine"* (0.370). The embedding has no idea which of those bears on a drink.
 
-All 19 records sit in a range of 0.356–0.496 — a spread of 0.140. No single
+All 19 records sit in a range of 0.356 to 0.496, a spread of 0.140. No single
 `relevance_score` keeps the top record and drops the bottom one, and the default of
 0.2 keeps **everything**. Across an 8-turn conversation the stock manager injected
 147 memory records totalling ~2,500 tokens, including on the turns "Hello!", "What
@@ -106,7 +107,7 @@ round trip, not ten.
 
 ## 3. The finding that actually mattered: wording, not model
 
-The single biggest result here is not the architecture, it is that **the question
+The single biggest result here is not the architecture. It is that **the question
 wording carries almost all of the quality**, and that it is cheap to measure.
 
 `scripts/tune_gate.py` runs 5 candidate wordings against 20 labelled utterances,
@@ -120,7 +121,7 @@ batching all 5 into one call per utterance. On `strands-decider-2b`:
 | inverted ("answerable without knowing the user") | 95% | −0.118 |
 | 4-level `score` version | 95% | −0.049 |
 
-65% is useless — barely better than always retrieving. The *same question* with the
+65% is useless, barely better than always retrieving. The *same question* with the
 boundary spelled out separates the two classes cleanly with a usable margin. The
 `criteria` field is doing the work.
 
@@ -142,7 +143,7 @@ Two things to take from that table:
 - **Separation and ranking fail independently.** The topic-overlap wording ranks
   perfectly (AUC 1.000) but is hopeless at any absolute threshold (margin −0.400).
   If you only measure one of these you will pick the wrong wording.
-- The counterfactual framing *inverts* (AUC 0.496, P@k 29%) — it is actively worse
+- The counterfactual framing *inverts* (AUC 0.496, P@k 29%), so it is actively worse
   than random. Plausible-sounding prompts can be anti-correlated, which is a good
   argument for measuring rather than reasoning about wording.
 
@@ -158,7 +159,7 @@ AgentCore's strategies do not return the same shape. `SEMANTIC` gives prose
 Upstream injects that verbatim. It survives contact with a large model, but it
 measurably skews the validator: the raw-JSON records scored *systematically
 higher* regardless of relevance, so a threshold tuned on prose let JSON false
-positives through — "always books an aisle seat" was kept for a question about what
+positives through, "always books an aisle seat" was kept for a question about what
 to drink. `records.py` flattens both strategies to one prose style first
 ("When ordering a drink or beverage: Dislikes sparkling water"). That alone took
 the drink query from 10 memories kept to 7, dropping exactly the wrong ones
@@ -180,20 +181,24 @@ difference stays attributable to gating alone.
 | memory service time | 4,230 ms | **1,900 ms** | 1,745 ms |
 | decider calls | 0 | 14 (4,867 ms) | 14 (7,210 ms) |
 
-The gate closed on exactly the right 5 turns — "Hello!", "What is 17 times 23?",
-"Thanks!", "Can you explain what a bloom filter is?", "ok cool" — and opened on the
-3 that needed memory. **Answer quality is unchanged**: both arms recommend the decaf
+The gate closed on exactly the right 5 turns ("Hello!", "What is 17 times 23?",
+"Thanks!", "Can you explain what a bloom filter is?" and "ok cool") and opened on
+the 3 that needed memory. **Answer quality is unchanged**: both arms recommend the decaf
 oat flat white, both remember the aisle seat and YVR, both suggest vegetarian pho
 with the peanut warning. The gated arm gets there on ~15% of the context.
 
 ### The honest caveat on latency
 
 Wall-clock is a wash here (29.9 s gated vs 29.3 s baseline), and that is not a win
-worth claiming. The decider is being called **from a laptop outside `us-west-2`**,
-so each call costs ~350 ms of round trip against ~50–70 ms of actual server-side
-work. 14 calls of avoidable network is roughly the 2.3 s saved on the memory
-service. Co-located in-region the arithmetic turns positive, but that is an
-inference from the endpoint's documented latency, not something measured here.
+worth claiming. The cause is a deployment choice of mine, not the model: this calls
+a remote SageMaker endpoint **from a laptop outside `us-west-2`**, so each call
+costs ~350 ms of round trip against ~50 to 70 ms of actual work. 14 calls of
+avoidable network is roughly the 2.3 s saved on the memory service.
+
+The released model runs locally (`pip install strands-decider`, ~153 ms on an M3
+MacBook) where there is no round trip to pay at all, so I would expect the column
+to go positive. Not measured, so treat it as the next experiment rather than a
+result.
 
 So the defensible wins from this PoC are **the 85% cut in injected context** and
 **5 of 8 memory API calls avoided**. Treat the latency case as unproven until it is
@@ -203,7 +208,7 @@ run in-region.
 
 Both the gate and the validator fail open: if the decider errors, the manager
 retrieves and keeps everything, degrading to upstream behaviour rather than
-blinding the agent. That is the right default, but it hides failure — during
+blinding the agent. That is the right default, but it hides failure. During
 development a misconfigured endpoint name made *every* decision error, and the run
 still produced correct answers, so the stats just looked oddly ineffective. Hence
 `GateStats.decider_errors`, which is printed loudly when non-zero:
@@ -236,12 +241,23 @@ tests/test_gate.py     16 tests, stubbed decider, no network
 
 **You need a decision model.** Two backends are implemented:
 
-- `strands-decider-2b` on a SageMaker real-time endpoint (Triton). **There is no
-  public deployment of this model.** If you have your own endpoint, point the code
-  at it with `DECIDER_ENDPOINT` / `DECIDER_REGION`.
-- **Jev**, via OpenRouter's `/decisions` endpoint — this one *is* publicly
-  reachable with an `OPENROUTER_API_KEY`, so `--decider jev` is the path most
-  people can actually run.
+- **`strands-decider`**, the open source 2B decision model
+  ([announcement](https://strandsagents.com/blog/introducing-strands-decider/),
+  [code](https://github.com/strands-labs/strands-decider),
+  [weights](https://huggingface.co/StrandsAgents)). It is designed to run
+  **locally** via `pip install strands-decider`, at roughly 115 ms on an RTX 3090
+  and 153 ms on an M3 MacBook.
+
+  Note that this PoC does *not* use that local path. It calls the model over a
+  SageMaker real-time endpoint (Triton), which is how I happened to have it
+  deployed, and that choice is the entire reason the latency column below is a
+  wash: a remote call from outside the region costs ~350 ms of round trip against
+  50 to 70 ms of real work. Point it at your own endpoint with `DECIDER_ENDPOINT` /
+  `DECIDER_REGION`; the default endpoint name is mine and will not resolve for you.
+  **Porting this to the local package is the most useful next change.**
+- **Jev**, via OpenRouter's `/decisions` endpoint. Reachable with just an
+  `OPENROUTER_API_KEY`, so `--decider jev` is the lowest-friction path, and it is
+  useful as a second opinion from a model I had no hand in.
 
 You also need AWS credentials with Bedrock AgentCore Memory and `bedrock-runtime`
 access in `us-west-2`, and the agent itself calls Claude Sonnet 4.5 on Bedrock.
@@ -270,7 +286,7 @@ cp .env.example .env                          # add OPENROUTER_API_KEY for Jev
 (`SEMANTIC` and `USER_PREFERENCE`) and seeds it with five short conversations, then
 AgentCore's extraction pipeline takes a few minutes to produce the ~19 long-term
 records the demo queries. **This creates billable AWS resources** and the script
-does not delete them — remove the memory when you are done.
+does not delete them, so remove the memory when you are done.
 
 The seeded persona (`demo_user`) is **entirely fictional**. The preferences, the
 dietary details and the dog are invented demo data, chosen to span several
@@ -279,24 +295,24 @@ returning the wrong one.
 
 ## 8. Licence
 
-MIT — see [LICENSE](LICENSE). Not affiliated with AWS or the Strands Agents project.
+MIT, see [LICENSE](LICENSE). Not affiliated with AWS or the Strands Agents project.
 
 ## 9. Where this would go next
 
 - **Run it in-region** and settle the latency question properly.
 - **Route, don't just gate.** The gate is one `noul`; a `choice` question in the
   same call could pick *which* namespace is worth searching, so a drink question
-  never searches travel memories. That is free — it is the same round trip.
+  never searches travel memories. That is free, being the same round trip.
 - **Thresholds are per-backend and need owning.** Across repeated tuning runs,
   rankings were stable for both models (per-query AUC 1.000 every time) but Jev's
   *absolute* values drifted enough to move its best pooled threshold, while
   `strands-decider-2b`'s held. 2b is the tuned path here; the Jev numbers in
   `BACKEND_DEFAULTS` are a reasonable start, not a measured optimum. A relative
   rule (keep what is close to the best for *this* query) would likely be more
-  robust than an absolute cut — it was tried against the tuning data and lost to
+  robust than an absolute cut, it was tried against the tuning data and lost to
   the absolute threshold on 2b, so it is not in the code, but with a drifting
   backend it is the obvious next thing.
-- **The labelled sets are tiny** — 20 utterances and 4 queries, written by the same
+- **The labelled sets are tiny**, 20 utterances and 4 queries, written by the same
   person who wrote the prompts. The 100% figures mean "no errors on this small
   set", not "solved". Anything load-bearing needs a bigger, independently labelled
   set and a held-out split.

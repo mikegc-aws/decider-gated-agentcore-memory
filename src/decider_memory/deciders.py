@@ -173,7 +173,12 @@ class SageMakerDecider:
         from botocore.config import Config
 
         # Point this at your own endpoint via DECIDER_ENDPOINT / DECIDER_REGION.
-        # There is no public deployment of this model -- see the README.
+        #
+        # Note this is NOT how strands-decider is meant to be run. The released
+        # model is a local `pip install strands-decider` (~153 ms on an M3
+        # MacBook). This class talks to a SageMaker/Triton endpoint because that
+        # is how I had it deployed, and the round trip from outside the region is
+        # the sole reason the PoC shows no latency win. See the README.
         self.endpoint = endpoint or os.environ.get("DECIDER_ENDPOINT", "strands-decider-g6")
         region = region or os.environ.get("DECIDER_REGION", "us-west-2")
         self._client = boto3.client(
