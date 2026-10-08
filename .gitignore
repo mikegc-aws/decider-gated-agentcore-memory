@@ -1,0 +1,7 @@
+.venv/
+.env
+.memory_id
+.strategies.json
+__pycache__/
+*.egg-info/
+.pytest_cache/
